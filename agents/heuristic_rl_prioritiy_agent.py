@@ -867,12 +867,6 @@ class FrameProcessor:
         """
         Assign actions to groups
         """
-        group_0_segments = set()
-        group_1_segments = set()
-        group_2_segments = set()
-        group_3_segments = set()
-        group_4_segments = set()
-
         for segment_id, segment in enumerate(frame_segments):
             x_width, y_width = segment["bounding_box"][2] - segment["bounding_box"][0] + 1, segment["bounding_box"][3] - segment["bounding_box"][1] + 1
             is_salient = segment["color"] in self.salient_color
@@ -881,21 +875,30 @@ class FrameProcessor:
 
             assert n_groups == 5, "Only 5 groups are supported for now"
 
-            if is_salient and is_medium_width:
-                group_0_segments.add(segment_id)
-            elif is_medium_width:
-                group_1_segments.add(segment_id)
-            elif is_salient:
-                group_2_segments.add(segment_id)
-            elif not is_status_bar:
-                group_3_segments.add(segment_id)
-            else:
-                group_4_segments.add(segment_id)
+            # if is_salient and is_medium_width:
+            #     group_0_segments.add(segment_id)
+            # elif is_medium_width:
+            #     group_1_segments.add(segment_id)
+            # elif is_salient:
+            #     group_2_segments.add(segment_id)
+            # elif not is_status_bar:
+            #     group_3_segments.add(segment_id)
+            # else:
+            #     group_4_segments.add(segment_id)
+            features = [is_salient, is_medium_width, is_status_bar]
+            g1, g2, g3, g4, g5 = self.create_priority_groups(features)
 
-        groups2segments = [group_0_segments, group_1_segments, group_2_segments, group_3_segments, group_4_segments]
+        groups2segments = [g1, g2, g3, g4, g5]
         # groups2segments = groups2segments[::-1] # NOTE: temporary to check the robustness 
 
         return groups2segments
+
+    def create_priority_groups(self, features: list[bool]) -> list[set[int]]:
+        """
+        Use RL with dense +-1 signal of frame changes via MAML
+        """
+        pass
+        
 
 
 
