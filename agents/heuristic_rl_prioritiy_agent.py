@@ -893,9 +893,14 @@ class FrameProcessor:
 
         return groups2segments
 
-    def create_priority_groups(self, features: list[bool]) -> list[set[int]]:
+    def create_priority_groups_rl(self, features: list[bool]) -> list[set[int]]:
         """
         Use RL with dense +-1 signal of frame changes via MAML
+        """
+        pass
+    def create_priority_groups_nn(self, features: list[bool]) -> list[set[int]]:
+        """
+        Use unsupervised neural to do above
         """
         pass
         
