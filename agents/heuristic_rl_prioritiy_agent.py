@@ -18,12 +18,14 @@ class FrameProcessorRL(FrameProcessor):
         self.last_features_list: list[list[bool]] = []
 
         # --- Vanilla RL: linear policy over 3 features ---
-        self.rl_weights = np.zeros(3)
+        # Init recovers heuristic ordering while staying near sigmoid midpoint for fast gradients.
+        # [is_salient, is_medium_width, is_status_bar] → σ in [0.27, 0.72], σ(1-σ) ≥ 0.20
+        self.rl_weights = np.array([0.3, 0.6, -1.0])
         self.rl_lr: float = 0.05
 
         # --- MAML (first-order FOMAML): linear policy ---
-        self.maml_meta_weights = np.zeros(3)
-        self.maml_task_weights = np.zeros(3)   # fast weights, reset each level
+        self.maml_meta_weights = np.array([0.3, 0.6, -1.0])
+        self.maml_task_weights = np.array([0.3, 0.6, -1.0])   # fast weights, reset each level
         self.maml_meta_lr: float = 0.01
         self.maml_inner_lr: float = 0.05
         self.maml_task_experience: list[tuple[np.ndarray, float]] = []
