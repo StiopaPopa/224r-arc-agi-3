@@ -13,6 +13,12 @@ from .templates.random_agent import Random
 from .templates.reasoning_agent import ReasoningAgent
 from .templates.smolagents import SmolCodingAgent, SmolVisionAgent
 from .heuristic_agent import HeuristicAgent
+from .heuristic_rl_prioritiy_agent import (
+    HeuristicRLAgent,
+    HeuristicRLVanillaAgent,
+    HeuristicRLMAMLAgent,
+    HeuristicRLNNAgent,
+)
 
 load_dotenv()
 
@@ -28,6 +34,12 @@ for rec in Recorder.list():
 
 # update the agent dictionary to include subclasses of LLM class
 AVAILABLE_AGENTS["reasoningagent"] = ReasoningAgent
+
+# RL/MAML/NN priority-mode agents (subclasses of HeuristicAgent, not direct Agent subclasses)
+AVAILABLE_AGENTS["heuristicrlagent"] = HeuristicRLAgent
+AVAILABLE_AGENTS["heuristicrlvanillaagent"] = HeuristicRLVanillaAgent
+AVAILABLE_AGENTS["heuristicrlmamlagent"] = HeuristicRLMAMLAgent
+AVAILABLE_AGENTS["heuristicrlnnagent"] = HeuristicRLNNAgent
 
 __all__ = [
     "Swarm",
