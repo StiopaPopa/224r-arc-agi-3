@@ -42,8 +42,8 @@ HEADERS = {
 }
 
 
-def run_agent(swarm: Swarm) -> None:
-    swarm.main()
+def run_agent(swarm: Swarm, time_limit: float | None) -> None:
+    swarm.main(time_limit=time_limit)
     os.kill(os.getpid(), signal.SIGINT)
 
 
@@ -93,12 +93,15 @@ def main() -> None:
     agents = ["base"]
     # ["vc33", "tn36", "su15", "s5i5", "r11l", "lp85", "ft09"]
     _games = ["vc33"]
+    # time limit (s)
+    time_limit = 1 * 60
     # construct unique 'hash' for this eval run (based on date/time)
     date_str = time.strftime("%m/%d-%H:%M")  
     run_id = f"eval-{date_str}"
     print("Run ID:", run_id)
     print("Agents:", agents)
     print("Games:", _games)
+    print("Time limit (s):", time_limit)
     print('==================================')
 
     # Get the list of games from the API (name is slightly different)
@@ -144,7 +147,7 @@ def main() -> None:
             games,
             tags=tags,  # Pass tags as keyword argument
         )
-        agent_thread = threading.Thread(target=partial(run_agent, swarm))
+        agent_thread = threading.Thread(target=partial(run_agent, swarm), kwargs={"time_limit": time_limit})
         agent_thread.daemon = True  # die when the main thread dies
         agent_thread.start()
 
