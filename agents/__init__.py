@@ -19,6 +19,7 @@ from .heuristic_rl_prioritiy_agent import (
     HeuristicRLMAMLAgent,
     HeuristicRLNNAgent,
     HeuristicRLSACAgent,
+    HeuristicRLPPOAgent,
 )
 
 load_dotenv()
@@ -37,11 +38,12 @@ for rec in Recorder.list():
 AVAILABLE_AGENTS["reasoningagent"] = ReasoningAgent
 
 # RL/MAML/NN priority-mode agents (subclasses of HeuristicAgent, not direct Agent subclasses)
-AVAILABLE_AGENTS["heuristicrlagent"] = HeuristicRLAgent
-AVAILABLE_AGENTS["heuristicrlvanillaagent"] = HeuristicRLVanillaAgent
-AVAILABLE_AGENTS["heuristicrlmamlagent"] = HeuristicRLMAMLAgent
-AVAILABLE_AGENTS["heuristicrlnnagent"] = HeuristicRLNNAgent
-AVAILABLE_AGENTS["heuristicrlsacagent"] = HeuristicRLSACAgent
+AVAILABLE_AGENTS["base"] = HeuristicRLAgent
+AVAILABLE_AGENTS["vanilla"] = HeuristicRLVanillaAgent
+AVAILABLE_AGENTS["maml"] = HeuristicRLMAMLAgent
+AVAILABLE_AGENTS["nn"] = HeuristicRLNNAgent
+AVAILABLE_AGENTS["sac"] = HeuristicRLSACAgent
+AVAILABLE_AGENTS["ppo"] = HeuristicRLPPOAgent
 
 __all__ = [
     "Swarm",

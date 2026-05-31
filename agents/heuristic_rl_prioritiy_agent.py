@@ -33,7 +33,7 @@ _SATURATION: np.ndarray = np.array([
 
 
 class FrameProcessorRL(FrameProcessor):
-    """FrameProcessor with RL/MAML/NN-based learnable segment priority assignment.
+    """FrameProcessor with RL/MAML/NN/SAC/PPO-based learnable segment priority assignment.
 
     features per segment:
         [saturation, closeness_to_medium, is_status_bar, log1p_twins]  (4 floats)
@@ -106,6 +106,30 @@ class FrameProcessorRL(FrameProcessor):
         self.sac_update_freq: int = 1
         self.sac_steps: int = 0
 
+        # --- PPO: Proximal Policy Optimisation (on-policy, actor-critic, clipped surrogate) ---
+        # Actor  4→8 ReLU→1 sigmoid  — outputs p(click | φ)
+        # Critic 4→8 ReLU→1 linear   — outputs V(φ), used as GAE baseline
+        rng_ppo = np.random.default_rng(44)
+        self.ppo_actor_W1  = rng_ppo.normal(0.0, 0.1, (8, 4))
+        self.ppo_actor_b1  = np.zeros(8)
+        self.ppo_actor_W2  = rng_ppo.normal(0.0, 0.1, (1, 8))
+        self.ppo_actor_b2  = np.zeros(1)
+        self.ppo_critic_W1 = rng_ppo.normal(0.0, 0.1, (8, 4))
+        self.ppo_critic_b1 = np.zeros(8)
+        self.ppo_critic_W2 = rng_ppo.normal(0.0, 0.1, (1, 8))
+        self.ppo_critic_b2 = np.zeros(1)
+        self.ppo_lr:          float = 0.01
+        self.ppo_clip_eps:    float = 0.2   # surrogate clip ratio ε
+        self.ppo_gamma:       float = 0.99  # discount factor
+        self.ppo_lam:         float = 0.95  # GAE-λ
+        self.ppo_c_value:     float = 0.5   # value-loss coefficient
+        self.ppo_c_entropy:   float = 0.01  # entropy bonus coefficient
+        self.ppo_epochs:      int   = 4     # gradient epochs per rollout flush
+        self.ppo_batch_size:  int   = 8     # mini-batch size within an epoch
+        self.ppo_buffer_size: int   = 32    # flush rollout after this many steps
+        # Each entry: (features, log_prob_old, reward, value_old)
+        self.ppo_buffer: list[tuple[np.ndarray, float, float, float]] = []
+
     # ------------------------------------------------------------------
     # Feature extraction
     # ------------------------------------------------------------------
@@ -175,6 +199,8 @@ class FrameProcessorRL(FrameProcessor):
             return self.create_priority_groups_nn(features)
         elif self.priority_mode == "sac":
             return self.create_priority_groups_sac(features)
+        elif self.priority_mode == "ppo":
+            return self.create_priority_groups_ppo(features)
         raise ValueError(f"Unknown priority_mode: {self.priority_mode!r}")
 
     # ------------------------------------------------------------------
@@ -388,6 +414,153 @@ class FrameProcessorRL(FrameProcessor):
         self.sac_q2t_b2 = tau * self.sac_q2_b2 + (1 - tau) * self.sac_q2t_b2
 
     # ------------------------------------------------------------------
+    # Proximal Policy Optimisation (PPO)
+    # ------------------------------------------------------------------
+
+    def _ppo_actor_forward(
+        self, f: np.ndarray
+    ) -> tuple[np.ndarray, np.ndarray, float]:
+        """Return (pre-activations h_pre, activations h, probability p)."""
+        h_pre = f @ self.ppo_actor_W1.T + self.ppo_actor_b1
+        h     = np.maximum(0.0, h_pre)
+        p     = float(self._sigmoid((h @ self.ppo_actor_W2.T + self.ppo_actor_b2).ravel())[0])
+        return h_pre, h, p
+
+    def _ppo_critic_forward(
+        self, f: np.ndarray
+    ) -> tuple[np.ndarray, np.ndarray, float]:
+        """Return (pre-activations h_pre, activations h, value V)."""
+        h_pre = f @ self.ppo_critic_W1.T + self.ppo_critic_b1
+        h     = np.maximum(0.0, h_pre)
+        v     = float((h @ self.ppo_critic_W2.T + self.ppo_critic_b2).ravel()[0])
+        return h_pre, h, v
+
+    def create_priority_groups_ppo(
+        self, features: list[list[float]]
+    ) -> list[set[int]]:
+        """
+        Use Proximal Policy Optimisation to score segments.
+
+        Actor (4→8 ReLU→1 sigmoid) outputs p(click | φ(segment)).  Segments
+        ranked by p descending and split into 5 priority groups.  The critic
+        (4→8 ReLU→1 linear) provides a value baseline for variance reduction via
+        GAE-λ.  Weights are updated from a fixed-size rollout buffer using the
+        clipped surrogate objective (ε=0.2), value-function MSE (c_v=0.5), and
+        a Bernoulli entropy bonus (c_e=0.01) across K=4 gradient epochs.
+        """
+        if not features:
+            return [set() for _ in range(5)]
+        scores = np.array(
+            [self._ppo_actor_forward(np.array(f, dtype=float))[2] for f in features]
+        )
+        return self._scores_to_groups(scores)
+
+    def _update_ppo(self, seg_features: list[float], reward: float) -> None:
+        """Buffer one (features, reward) transition; flush when full."""
+        f              = np.array(seg_features, dtype=float)
+        _, _, p        = self._ppo_actor_forward(f)
+        _, _, v        = self._ppo_critic_forward(f)
+        lp_old         = float(np.log(np.clip(p, 1e-8, 1.0 - 1e-8)))
+        self.ppo_buffer.append((f.copy(), lp_old, reward, v))
+
+        if len(self.ppo_buffer) >= self.ppo_buffer_size:
+            self._ppo_flush_and_update()
+
+    def _ppo_flush_and_update(self) -> None:
+        """Run full PPO update on the collected rollout, then clear the buffer."""
+        if not self.ppo_buffer:
+            return
+
+        fs, lps_old, rewards, values = zip(*self.ppo_buffer)
+        fs      = list(fs)
+        lps_old = np.array(lps_old, dtype=float)
+        rewards = np.array(rewards,  dtype=float)
+        values  = np.array(values,   dtype=float)
+        n       = len(rewards)
+
+        # ── GAE-λ advantage computation ───────────────────────────────────────
+        # Each segment interaction is treated as terminal, so the bootstrap
+        # value after the final step is 0.
+        advantages = np.zeros(n, dtype=float)
+        gae = 0.0
+        for t in reversed(range(n)):
+            next_v = values[t + 1] if t + 1 < n else 0.0
+            delta  = rewards[t] + self.ppo_gamma * next_v - values[t]
+            gae    = delta + self.ppo_gamma * self.ppo_lam * gae
+            advantages[t] = gae
+
+        returns    = advantages + values
+        advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+
+        # ── K epochs of random mini-batch gradient descent ────────────────────
+        idx = np.arange(n)
+        for _ in range(self.ppo_epochs):
+            np.random.shuffle(idx)
+            for start in range(0, n, self.ppo_batch_size):
+                for i in idx[start : start + self.ppo_batch_size]:
+                    self._ppo_step(
+                        fs[i], lps_old[i],
+                        float(advantages[i]), float(returns[i]),
+                    )
+
+        self.ppo_buffer.clear()
+
+    def _ppo_step(
+        self,
+        f:      np.ndarray,
+        lp_old: float,
+        adv:    float,
+        ret:    float,
+    ) -> None:
+        """Single-sample PPO gradient step on actor and critic."""
+
+        # ── Actor ─────────────────────────────────────────────────────────────
+        h_ap, h_a, p = self._ppo_actor_forward(f)
+        p_c   = float(np.clip(p, 1e-8, 1.0 - 1e-8))
+        lp    = float(np.log(p_c))
+        ratio = float(np.exp(lp - lp_old))
+        clip  = float(np.clip(ratio, 1.0 - self.ppo_clip_eps, 1.0 + self.ppo_clip_eps))
+
+        # Gradient of -min(ratio·A, clip·A) w.r.t. log p
+        if abs(ratio * adv) <= abs(clip * adv):
+            d_lp = -adv          # unclipped branch: d/d(log p) of -(ratio · adv)
+        else:
+            d_lp = 0.0           # clipped: no gradient flows
+
+        # Entropy H(p) = -p log p - (1-p) log(1-p)  →  dH/dp = log((1-p)/p)
+        d_entropy = float(np.log((1.0 - p_c) / p_c))
+
+        # Combined actor loss gradient: d(-L_clip - c_e·H)/dp
+        d_p   = d_lp / p_c - self.ppo_c_entropy * d_entropy
+        d_pre = d_p * p * (1.0 - p)   # chain through sigmoid
+
+        g_W2 = d_pre * h_a[np.newaxis, :]
+        g_b2 = np.array([d_pre])
+        g_h  = d_pre * self.ppo_actor_W2.squeeze(0) * (h_ap > 0).astype(float)
+        g_W1 = g_h[:, np.newaxis] * f[np.newaxis, :]
+        g_b1 = g_h
+
+        self.ppo_actor_W1 -= self.ppo_lr * g_W1
+        self.ppo_actor_b1 -= self.ppo_lr * g_b1
+        self.ppo_actor_W2 -= self.ppo_lr * g_W2
+        self.ppo_actor_b2 -= self.ppo_lr * g_b2
+
+        # ── Critic MSE: L_v = c_v · (V(f) - ret)² ───────────────────────────
+        h_cp, h_c, v_pred = self._ppo_critic_forward(f)
+        d_v = self.ppo_c_value * 2.0 * (v_pred - ret)
+
+        g_W2c = d_v * h_c[np.newaxis, :]
+        g_b2c = np.array([d_v])
+        g_hc  = d_v * self.ppo_critic_W2.squeeze(0) * (h_cp > 0).astype(float)
+        g_W1c = g_hc[:, np.newaxis] * f[np.newaxis, :]
+        g_b1c = g_hc
+
+        self.ppo_critic_W1 -= self.ppo_lr * g_W1c
+        self.ppo_critic_b1 -= self.ppo_lr * g_b1c
+        self.ppo_critic_W2 -= self.ppo_lr * g_W2c
+        self.ppo_critic_b2 -= self.ppo_lr * g_b2c
+
+    # ------------------------------------------------------------------
     # Unified update entry point (called from HeuristicRLAgent)
     # ------------------------------------------------------------------
 
@@ -401,6 +574,8 @@ class FrameProcessorRL(FrameProcessor):
             self._update_nn(seg_features, reward)
         elif self.priority_mode == "sac":
             self._update_sac(seg_features, reward)
+        elif self.priority_mode == "ppo":
+            self._update_ppo(seg_features, reward)
         # heuristic: no parameters to update
 
 
@@ -476,3 +651,16 @@ class HeuristicRLSACAgent(HeuristicRLAgent):
       - Soft target network updates (training stability)
     """
     PRIORITY_MODE = "sac"
+
+
+class HeuristicRLPPOAgent(HeuristicRLAgent):
+    """HeuristicRLAgent using Proximal Policy Optimisation for segment priority.
+
+    Key differences from the other RL agents:
+      - On-policy rollout buffer (size 32) with full GAE-λ advantage estimates
+      - Clipped surrogate objective (ε=0.2) prevents destructively large policy updates
+      - Dedicated critic network provides a lower-variance value baseline
+      - K=4 gradient epochs per rollout reuse collected data without going off-policy
+      - Entropy bonus (c_e=0.01) maintains exploration throughout training
+    """
+    PRIORITY_MODE = "ppo"
