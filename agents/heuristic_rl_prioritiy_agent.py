@@ -107,8 +107,8 @@ class FrameProcessorRL(FrameProcessor):
         self.sac_steps: int = 0
 
         # --- PPO: Proximal Policy Optimisation (on-policy, actor-critic, clipped surrogate) ---
-        # Actor  4→8 ReLU→1 sigmoid  — outputs p(click | φ)
-        # Critic 4→8 ReLU→1 linear   — outputs V(φ), used as GAE baseline
+        # Actor  4→8 ReLU→1 sigmoid  — outputs p(click | phi)
+        # Critic 4→8 ReLU→1 linear   — outputs V(phi), used as GAE baseline
         rng_ppo = np.random.default_rng(44)
         self.ppo_actor_W1  = rng_ppo.normal(0.0, 0.1, (8, 4))
         self.ppo_actor_b1  = np.zeros(8)
@@ -119,14 +119,14 @@ class FrameProcessorRL(FrameProcessor):
         self.ppo_critic_W2 = rng_ppo.normal(0.0, 0.1, (1, 8))
         self.ppo_critic_b2 = np.zeros(1)
         self.ppo_lr:          float = 0.01
-        self.ppo_clip_eps:    float = 0.2   # surrogate clip ratio ε
+        self.ppo_clip_eps:    float = 0.2   # surrogate clip ratio epsilon
         self.ppo_gamma:       float = 0.99  # discount factor
-        self.ppo_lam:         float = 0.95  # GAE-λ
+        self.ppo_lam:         float = 0.95  # GAE-lambda
         self.ppo_c_value:     float = 0.5   # value-loss coefficient
         self.ppo_c_entropy:   float = 0.01  # entropy bonus coefficient
         self.ppo_epochs:      int   = 4     # gradient epochs per rollout flush
         self.ppo_batch_size:  int   = 8     # mini-batch size within an epoch
-        self.ppo_buffer_size: int   = 32    # flush rollout after this many steps
+        self.ppo_buffer_size: int   = 32    # flush rollout after said number of steps
         # Each entry: (features, log_prob_old, reward, value_old)
         self.ppo_buffer: list[tuple[np.ndarray, float, float, float]] = []
 
