@@ -41,10 +41,17 @@ HEADERS = {
     "Accept": "application/json",
 }
 
+# Global flag so Ctrl+C can abort the whole eval loop cleanly without
+# killing the process mid-scorecard-write
+_abort = threading.Event()
 
-def run_agent(swarm: Swarm, time_limit: float | None) -> None:
-    swarm.main(time_limit=time_limit)
-    os.kill(os.getpid(), signal.SIGINT)
+
+def run_swarm(swarm: Swarm, done_event: threading.Event, time_limit: int | None) -> None:
+    """Run one swarm to completion, then signal done. Does NOT kill the process."""
+    try:
+        swarm.main(time_limit=time_limit)
+    finally:
+        done_event.set()
 
 
 def cleanup(
@@ -69,6 +76,46 @@ def cleanup(
     sys.exit(0)
 
 
+def sigint_handler(signum: int, frame: Optional[FrameType]) -> None:
+    logger.info("Ctrl+C received — aborting eval after current run...")
+    _abort.set()
+
+
+def run_one(agent_name: str, games: list[str], tags: list[str], time_limit: float | None) -> None:
+    """Run a single (agent, games) combination synchronously, blocking until done."""
+    init_agentops(api_key=os.getenv("AGENTOPS_API_KEY"), log_level=logger.level)
+
+    swarm = Swarm(agent_name, ROOT_URL, games, tags=tags)
+    done_event = threading.Event()
+    # daemon=False so cleanup/scorecard writing is never cut off mid-run
+    thread = threading.Thread(target=run_swarm, args=(swarm, done_event, time_limit), daemon=False)
+    thread.start()
+
+    # Poll so Ctrl+C (_abort) can interrupt the wait between agents
+    while not done_event.is_set():
+        if _abort.is_set():
+            logger.info(f"Aborting run for agent={agent_name}")
+            # Still call cleanup so the in-progress scorecard is saved
+            cleanup(swarm, None, None)
+            break
+        done_event.wait(timeout=2)
+
+    thread.join(timeout=10)
+
+    # Close and log scorecard for this run
+    card_id = swarm.card_id
+    if card_id:
+        scorecard = swarm.close_scorecard(card_id)
+        if scorecard:
+            logger.info("--- EXISTING SCORECARD REPORT ---")
+            logger.info(json.dumps(scorecard.model_dump(), indent=2))
+            swarm.cleanup(scorecard)
+
+        # Provide web link to scorecard
+        scorecard_url = f"{ROOT_URL}/scorecards/{card_id}"
+        logger.info(f"View your scorecard online: {scorecard_url}")
+
+
 def main() -> None:
     log_level = logging.INFO
     if os.environ.get("DEBUG", "False") == "True":
@@ -88,13 +135,15 @@ def main() -> None:
     logger.addHandler(file_handler)
     logger.addHandler(stdout_handler)
 
+    signal.signal(signal.SIGINT, sigint_handler)
+
     # Specify which agents and (click-based) games to test run
     # ["base", "vanilla", "maml", "nn", "sac", "ppo"]
-    agents = ["base"]
+    agents = ["base", "vanilla"]
     # ["vc33", "tn36", "su15", "s5i5", "r11l", "lp85", "ft09"]
-    _games = ["vc33"]
-    # time limit (s)
-    time_limit = 1 * 60
+    _games = ["vc33", "tn36"]
+    # time limit (s) across all games played
+    time_limit = 10
     # construct unique 'hash' for this eval run (based on date/time)
     date_str = time.strftime("%m/%d-%H:%M")  
     run_id = f"eval-{date_str}"
@@ -134,35 +183,16 @@ def main() -> None:
 
     # Run all combinations of (agent, game)
     for a in agents:
+        if _abort.is_set():
+            logger.info("Eval aborted.")
+            break
+
         print(f"Running agent {a}\n==============================")
         # Start with base tag
         tags = [f"{run_id}-{a}"]  # e.g., "eval-09/01-12:00-base-vc33"
 
-        # Initialize AgentOps client
-        init_agentops(api_key=os.getenv("AGENTOPS_API_KEY"), log_level=log_level)
+        run_one(a, games, tags, time_limit)
 
-        swarm = Swarm(
-            a,
-            ROOT_URL,
-            games,
-            tags=tags,  # Pass tags as keyword argument
-        )
-        agent_thread = threading.Thread(target=partial(run_agent, swarm), kwargs={"time_limit": time_limit})
-        agent_thread.daemon = True  # die when the main thread dies
-        agent_thread.start()
-
-        signal.signal(signal.SIGINT, partial(cleanup, swarm))  # handler for Ctrl+C
-
-        try:
-            # Wait for the agent thread to complete
-            while agent_thread.is_alive():
-                agent_thread.join(timeout=5)  # Check every 5 second
-        except KeyboardInterrupt:
-            logger.info("KeyboardInterrupt received in main thread")
-            cleanup(swarm, signal.SIGINT, None)
-        except Exception as e:
-            logger.error(f"Unexpected error in main thread: {e}")
-            cleanup(swarm, None, None)
 
 if __name__ == "__main__":
     os.environ["TESTING"] = "False"
