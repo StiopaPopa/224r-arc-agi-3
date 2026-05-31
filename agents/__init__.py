@@ -18,6 +18,7 @@ from .heuristic_rl_prioritiy_agent import (
     HeuristicRLVanillaAgent,
     HeuristicRLMAMLAgent,
     HeuristicRLNNAgent,
+    HeuristicRLSACAgent,
 )
 
 load_dotenv()
@@ -40,6 +41,7 @@ AVAILABLE_AGENTS["heuristicrlagent"] = HeuristicRLAgent
 AVAILABLE_AGENTS["heuristicrlvanillaagent"] = HeuristicRLVanillaAgent
 AVAILABLE_AGENTS["heuristicrlmamlagent"] = HeuristicRLMAMLAgent
 AVAILABLE_AGENTS["heuristicrlnnagent"] = HeuristicRLNNAgent
+AVAILABLE_AGENTS["heuristicrlsacagent"] = HeuristicRLSACAgent
 
 __all__ = [
     "Swarm",

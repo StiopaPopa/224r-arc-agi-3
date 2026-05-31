@@ -72,6 +72,40 @@ class FrameProcessorRL(FrameProcessor):
         self.nn_b2 = np.zeros(1)
         self.nn_lr: float = 0.05
 
+        # --- SAC: Soft Actor-Critic (off-policy, twin critics, entropy regularisation) ---
+        # actor 4→8 ReLU→1 sigmoid;  Q1/Q2/Q1t/Q2t: 4→8 ReLU→1 linear
+        rng_sac = np.random.default_rng(43)
+        self.sac_actor_W1 = rng_sac.normal(0.0, 0.1, (8, 4))
+        self.sac_actor_b1 = np.zeros(8)
+        self.sac_actor_W2 = rng_sac.normal(0.0, 0.1, (1, 8))
+        self.sac_actor_b2 = np.zeros(1)
+        self.sac_q1_W1 = rng_sac.normal(0.0, 0.1, (8, 4))
+        self.sac_q1_b1 = np.zeros(8)
+        self.sac_q1_W2 = rng_sac.normal(0.0, 0.1, (1, 8))
+        self.sac_q1_b2 = np.zeros(1)
+        self.sac_q2_W1 = rng_sac.normal(0.0, 0.1, (8, 4))
+        self.sac_q2_b1 = np.zeros(8)
+        self.sac_q2_W2 = rng_sac.normal(0.0, 0.1, (1, 8))
+        self.sac_q2_b2 = np.zeros(1)
+        self.sac_q1t_W1 = self.sac_q1_W1.copy()
+        self.sac_q1t_b1 = self.sac_q1_b1.copy()
+        self.sac_q1t_W2 = self.sac_q1_W2.copy()
+        self.sac_q1t_b2 = self.sac_q1_b2.copy()
+        self.sac_q2t_W1 = self.sac_q2_W1.copy()
+        self.sac_q2t_b1 = self.sac_q2_b1.copy()
+        self.sac_q2t_W2 = self.sac_q2_W2.copy()
+        self.sac_q2t_b2 = self.sac_q2_b2.copy()
+        self.sac_log_alpha: float = float(np.log(0.2))
+        self.sac_alpha_lr: float = 0.003
+        self.sac_target_entropy: float = float(np.log(2.0))  # H[Bernoulli(0.5)]
+        self.sac_replay: list[tuple[np.ndarray, float]] = []
+        self.sac_replay_capacity: int = 1000
+        self.sac_batch_size: int = 16
+        self.sac_lr: float = 0.01
+        self.sac_tau: float = 0.005
+        self.sac_update_freq: int = 1
+        self.sac_steps: int = 0
+
     # ------------------------------------------------------------------
     # Feature extraction
     # ------------------------------------------------------------------
@@ -139,6 +173,8 @@ class FrameProcessorRL(FrameProcessor):
             return self.create_priority_groups_maml(features)
         elif self.priority_mode == "nn":
             return self.create_priority_groups_nn(features)
+        elif self.priority_mode == "sac":
+            return self.create_priority_groups_sac(features)
         raise ValueError(f"Unknown priority_mode: {self.priority_mode!r}")
 
     # ------------------------------------------------------------------
@@ -249,6 +285,109 @@ class FrameProcessorRL(FrameProcessor):
         self.nn_b2 -= self.nn_lr * d_b2
 
     # ------------------------------------------------------------------
+    # Soft Actor-Critic (SAC)
+    # ------------------------------------------------------------------
+
+    def _sac_q_step(
+        self,
+        W1: np.ndarray, b1: np.ndarray,
+        W2: np.ndarray, b2: np.ndarray,
+        f: np.ndarray, target: float,
+    ) -> None:
+        """One in-place MSE gradient step on a 4→8 ReLU→1 Q-network."""
+        h_pre = f @ W1.T + b1
+        h = np.maximum(0.0, h_pre)
+        d = float((h @ W2.T + b2).ravel()[0]) - target
+        dh = d * W2.squeeze(0) * (h_pre > 0).astype(float)
+        W2 -= self.sac_lr * d * h[np.newaxis, :]
+        b2 -= self.sac_lr * np.array([d])
+        W1 -= self.sac_lr * dh[:, np.newaxis] * f[np.newaxis, :]
+        b1 -= self.sac_lr * dh
+
+    def _sac_q_eval(
+        self,
+        W1: np.ndarray, b1: np.ndarray,
+        W2: np.ndarray, b2: np.ndarray,
+        f: np.ndarray,
+    ) -> float:
+        h = np.maximum(0.0, f @ W1.T + b1)
+        return float((h @ W2.T + b2).ravel()[0])
+
+    def create_priority_groups_sac(
+        self, features: list[list[float]]
+    ) -> list[set[int]]:
+        """
+        Use Soft Actor-Critic to score segments.
+
+        Actor (4→8 ReLU→1 sigmoid) is trained to maximise min(Q1, Q2)(f) with
+        a Bernoulli entropy bonus (temperature α).  Q1/Q2 are reward predictors
+        updated from a replay buffer; soft target copies Q1t/Q2t stabilise training.
+        """
+        if not features:
+            return [set() for _ in range(5)]
+        F = np.array(features, dtype=float)
+        H = np.maximum(0.0, F @ self.sac_actor_W1.T + self.sac_actor_b1)
+        scores = self._sigmoid((H @ self.sac_actor_W2.T + self.sac_actor_b2).ravel())
+        return self._scores_to_groups(scores)
+
+    def _update_sac(self, seg_features: list[float], reward: float) -> None:
+        f = np.array(seg_features, dtype=float)
+        self.sac_replay.append((f.copy(), reward))
+        if len(self.sac_replay) > self.sac_replay_capacity:
+            self.sac_replay.pop(0)
+        self.sac_steps += 1
+        if (len(self.sac_replay) < self.sac_batch_size
+                or self.sac_steps % self.sac_update_freq != 0):
+            return
+
+        indices = np.random.choice(len(self.sac_replay), self.sac_batch_size, replace=False)
+        alpha = float(np.exp(self.sac_log_alpha))
+        total_entropy = 0.0
+
+        for i in indices:
+            f_b, r_b = self.sac_replay[int(i)]
+
+            # Actor forward
+            h_ap = f_b @ self.sac_actor_W1.T + self.sac_actor_b1
+            h_a = np.maximum(0.0, h_ap)
+            p_a = float(self._sigmoid((h_a @ self.sac_actor_W2.T + self.sac_actor_b2).ravel())[0])
+            pc = np.clip(p_a, 1e-6, 1.0 - 1e-6)
+            total_entropy += -pc * np.log(pc) - (1.0 - pc) * np.log(1.0 - pc)
+
+            # Twin critic updates
+            self._sac_q_step(self.sac_q1_W1, self.sac_q1_b1, self.sac_q1_W2, self.sac_q1_b2, f_b, r_b)
+            self._sac_q_step(self.sac_q2_W1, self.sac_q2_b1, self.sac_q2_W2, self.sac_q2_b2, f_b, r_b)
+
+            # Actor update: minimise (p − σ(min_Q))² − α·H(p)
+            q1 = self._sac_q_eval(self.sac_q1_W1, self.sac_q1_b1, self.sac_q1_W2, self.sac_q1_b2, f_b)
+            q2 = self._sac_q_eval(self.sac_q2_W1, self.sac_q2_b1, self.sac_q2_W2, self.sac_q2_b2, f_b)
+            a_tgt = float(self._sigmoid(np.array([min(q1, q2)]))[0])
+            d_dp = 2.0 * (p_a - a_tgt) - alpha * float(np.log((1.0 - pc) / pc))
+            d_dpre = d_dp * p_a * (1.0 - p_a)
+            d_ha = d_dpre * self.sac_actor_W2.squeeze(0) * (h_ap > 0).astype(float)
+            self.sac_actor_W2 -= self.sac_lr * d_dpre * h_a[np.newaxis, :]
+            self.sac_actor_b2 -= self.sac_lr * np.array([d_dpre])
+            self.sac_actor_W1 -= self.sac_lr * d_ha[:, np.newaxis] * f_b[np.newaxis, :]
+            self.sac_actor_b1 -= self.sac_lr * d_ha
+
+        # Temperature update
+        self.sac_log_alpha = float(np.clip(
+            self.sac_log_alpha + self.sac_alpha_lr * (total_entropy / self.sac_batch_size - self.sac_target_entropy),
+            -5.0, 2.0,
+        ))
+
+        # Soft-update target Q-networks
+        tau = self.sac_tau
+        self.sac_q1t_W1 = tau * self.sac_q1_W1 + (1 - tau) * self.sac_q1t_W1
+        self.sac_q1t_b1 = tau * self.sac_q1_b1 + (1 - tau) * self.sac_q1t_b1
+        self.sac_q1t_W2 = tau * self.sac_q1_W2 + (1 - tau) * self.sac_q1t_W2
+        self.sac_q1t_b2 = tau * self.sac_q1_b2 + (1 - tau) * self.sac_q1t_b2
+        self.sac_q2t_W1 = tau * self.sac_q2_W1 + (1 - tau) * self.sac_q2t_W1
+        self.sac_q2t_b1 = tau * self.sac_q2_b1 + (1 - tau) * self.sac_q2t_b1
+        self.sac_q2t_W2 = tau * self.sac_q2_W2 + (1 - tau) * self.sac_q2t_W2
+        self.sac_q2t_b2 = tau * self.sac_q2_b2 + (1 - tau) * self.sac_q2t_b2
+
+    # ------------------------------------------------------------------
     # Unified update entry point (called from HeuristicRLAgent)
     # ------------------------------------------------------------------
 
@@ -260,6 +399,8 @@ class FrameProcessorRL(FrameProcessor):
             self._update_maml_inner(seg_features, reward)
         elif self.priority_mode == "nn":
             self._update_nn(seg_features, reward)
+        elif self.priority_mode == "sac":
+            self._update_sac(seg_features, reward)
         # heuristic: no parameters to update
 
 
@@ -323,3 +464,15 @@ class HeuristicRLMAMLAgent(HeuristicRLAgent):
 class HeuristicRLNNAgent(HeuristicRLAgent):
     """HeuristicRLAgent using a 2-layer MLP for segment priority."""
     PRIORITY_MODE = "nn"
+
+
+class HeuristicRLSACAgent(HeuristicRLAgent):
+    """HeuristicRLAgent using Soft Actor-Critic for segment priority.
+
+    Key differences from vanilla_rl / nn:
+      - Twin Q-critics (reduces Q-value overestimation)
+      - Off-policy replay buffer (better sample efficiency)
+      - Entropy regularisation with learned temperature α (exploration)
+      - Soft target network updates (training stability)
+    """
+    PRIORITY_MODE = "sac"
