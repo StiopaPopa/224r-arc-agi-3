@@ -4,12 +4,41 @@ from agents.heuristic_agent import FrameProcessor, HeuristicAgent
 from agents.structs import FrameData, GameAction
 
 
+# RGB values for the ARC-AGI-3 colour palette (indices 0–15, plus 16 for masked status bars)
+_COLOR_RGB = [
+    (255, 255, 255),  # 0  white
+    (204, 204, 204),  # 1  light grey
+    (153, 153, 153),  # 2  light grey
+    (102, 102, 102),  # 3  grey
+    (51,  51,  51),   # 4  dark grey
+    (0,   0,   0),    # 5  black
+    (255, 0,   0),    # 6
+    (0,   255, 0),    # 7
+    (250, 61,  50),   # 8  red
+    (31,  147, 255),  # 9  blue
+    (137, 216, 241),  # 10 light blue
+    (255, 221, 0),    # 11 yellow
+    (255, 133, 26),   # 12 orange
+    (229, 58,  163),  # 13 pink
+    (79,  205, 48),   # 14 green
+    (163, 86,  214),  # 15 purple
+    (0,   0,   0),    # 16 masked status bar — treated as black
+]
+
+# Precomputed HSV saturation for each colour index: (max-min)/max, 0 for pure black
+_SATURATION: np.ndarray = np.array([
+    (max(r, g, b) - min(r, g, b)) / max(r, g, b) if max(r, g, b) > 0 else 0.0
+    for r, g, b in _COLOR_RGB
+], dtype=float)
+
+
 class FrameProcessorRL(FrameProcessor):
     """FrameProcessor with RL/MAML/NN-based learnable segment priority assignment.
 
-    features per segment: [is_salient, is_medium_width, is_status_bar]  (3 bools)
-    reward signal:        +1 if clicking that segment caused a frame transition, -1 otherwise
-    output:               5 priority groups (group 0 = highest priority)
+    features per segment:
+        [saturation, closeness_to_medium, is_status_bar, log1p_twins]  (4 floats)
+    reward signal: +1 if clicking that segment caused a frame transition, -1 otherwise
+    output:        5 priority groups (group 0 = highest priority)
     """
 
     SAC_RAW_FEATURE_DIM = 10
@@ -18,23 +47,24 @@ class FrameProcessorRL(FrameProcessor):
         super().__init__()
         self.priority_mode = priority_mode
         self.last_features_list: list[list[float]] = []
+        self.last_features_list: list[list[float]] = []
 
-        # --- Vanilla RL: linear policy over 3 features ---
-        # Init recovers heuristic ordering while staying near sigmoid midpoint for fast gradients.
-        # [is_salient, is_medium_width, is_status_bar] → σ in [0.27, 0.72], σ(1-σ) ≥ 0.20
-        self.rl_weights = np.array([0.3, 0.6, -1.0])
+        # --- Vanilla RL: linear policy over 4 features ---
+        # Warm-start approximates heuristic ordering:
+        # [saturation, closeness_to_medium, is_status_bar, log1p_twins]
+        self.rl_weights = np.array([0.4, 0.6, -1.0, -0.2])
         self.rl_lr: float = 0.05
 
         # --- MAML (first-order FOMAML): linear policy ---
-        self.maml_meta_weights = np.array([0.3, 0.6, -1.0])
-        self.maml_task_weights = np.array([0.3, 0.6, -1.0])   # fast weights, reset each level
+        self.maml_meta_weights = np.array([0.4, 0.6, -1.0, -0.2])
+        self.maml_task_weights = np.array([0.4, 0.6, -1.0, -0.2])
         self.maml_meta_lr: float = 0.01
         self.maml_inner_lr: float = 0.05
         self.maml_task_experience: list[tuple[np.ndarray, float]] = []
 
-        # --- Neural net: 3 → 8 (ReLU) → 1 (sigmoid) ---
+        # --- Neural net: 4 → 8 (ReLU) → 1 (sigmoid) ---
         rng = np.random.default_rng(42)
-        self.nn_W1 = rng.normal(0.0, 0.1, (8, 3))
+        self.nn_W1 = rng.normal(0.0, 0.1, (8, 4))
         self.nn_b1 = np.zeros(8)
         self.nn_W2 = rng.normal(0.0, 0.1, (1, 8))
         self.nn_b2 = np.zeros(1)
@@ -129,7 +159,7 @@ class FrameProcessorRL(FrameProcessor):
         return groups
 
     # ------------------------------------------------------------------
-    # Override: collect all features first, then call create_priority_groups once
+    # Override: collect features then dispatch
     # ------------------------------------------------------------------
 
     def frame_segments_to_action_groups(
@@ -200,8 +230,8 @@ class FrameProcessorRL(FrameProcessor):
         """
         if not features:
             return [set() for _ in range(5)]
-        F = np.array(features, dtype=float)                # (N, 3)
-        scores = self._sigmoid(F @ self.rl_weights)        # (N,)
+        F = np.array(features, dtype=float)
+        scores = self._sigmoid(F @ self.rl_weights)
         return self._scores_to_groups(scores)
 
     def _update_vanilla_rl(self, seg_features: list[float], reward: float) -> None:
@@ -252,25 +282,25 @@ class FrameProcessorRL(FrameProcessor):
         self.maml_task_experience = []
 
     # ------------------------------------------------------------------
-    # Unsupervised neural network (2-layer MLP with online backprop)
+    # Neural network (2-layer MLP with online backprop)
     # ------------------------------------------------------------------
 
     def create_priority_groups_nn(
         self, features: list[list[float]]
     ) -> list[set[int]]:
         """
-        Use unsupervised neural net to do above
+        Use neural net to predict P(transition|φ(segment))
 
-        Architecture: 3 → Linear → ReLU → 8 → Linear → Sigmoid → priority score.
+        Architecture: 4 → Linear → ReLU → 8 → Linear → Sigmoid → priority score.
         Trained online with binary cross-entropy against the ±1 transition signal
         (converted to 0/1 targets).  Segments ranked by predicted transition
         probability and split into 5 priority groups.
         """
         if not features:
             return [set() for _ in range(5)]
-        F = np.array(features, dtype=float)                         # (N, 3)
-        H = np.maximum(0.0, F @ self.nn_W1.T + self.nn_b1)         # (N, 8)
-        scores = self._sigmoid((H @ self.nn_W2.T + self.nn_b2).ravel())  # (N,)
+        F = np.array(features, dtype=float)
+        H = np.maximum(0.0, F @ self.nn_W1.T + self.nn_b1)
+        scores = self._sigmoid((H @ self.nn_W2.T + self.nn_b2).ravel())
         return self._scores_to_groups(scores)
 
     def _update_nn(self, seg_features: list[float], reward: float) -> None:
@@ -279,17 +309,14 @@ class FrameProcessorRL(FrameProcessor):
         h_pre = f @ self.nn_W1.T + self.nn_b1              # (8,)
         h = np.maximum(0.0, h_pre)                          # (8,)
         score = float(self._sigmoid((h @ self.nn_W2.T + self.nn_b2).ravel())[0])
-        target = (reward + 1.0) / 2.0                       # ±1 → 0/1
-        d_out = score - target                              # scalar BCE gradient
-        # Backprop through output layer
-        d_W2 = d_out * h[np.newaxis, :]                    # (1, 8)
+        target = (reward + 1.0) / 2.0
+        d_out = score - target
+        d_W2 = d_out * h[np.newaxis, :]
         d_b2 = np.array([d_out])
-        # Backprop through hidden layer
-        d_h = d_out * self.nn_W2.squeeze(0)                # (8,)
-        d_h_pre = d_h * (h_pre > 0).astype(float)          # (8,) ReLU mask
-        d_W1 = d_h_pre[:, np.newaxis] * f[np.newaxis, :]   # (8, 3)
+        d_h = d_out * self.nn_W2.squeeze(0)
+        d_h_pre = d_h * (h_pre > 0).astype(float)
+        d_W1 = d_h_pre[:, np.newaxis] * f[np.newaxis, :]
         d_b1 = d_h_pre
-        # Gradient-descent update
         self.nn_W1 -= self.nn_lr * d_W1
         self.nn_b1 -= self.nn_lr * d_b1
         self.nn_W2 -= self.nn_lr * d_W2
@@ -417,24 +444,18 @@ class HeuristicRLAgent(HeuristicAgent):
 
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
-        # Swap in the learnable processor (super().__init__ already created one,
-        # so we simply replace it)
         self.frame_processor = FrameProcessorRL(priority_mode=self.PRIORITY_MODE)
 
     def choose_action(
         self, frames: list[FrameData], latest_frame: FrameData
     ) -> GameAction:
-        # Snapshot state BEFORE super() processes the current transition
         prev_hash = self.last_hashed_frame
         prev_action = self.last_action
-        # Shallow copy so mutation inside super() doesn't affect us
         prev_features = list(self.frame_processor.last_features_list)
         was_level_up = self.level_up
 
         action = super().choose_action(frames, latest_frame)
 
-        # super() has now written ±1 into hashed_frame2action_results for the
-        # previous (hash, action) pair.  Feed that reward to the RL model.
         if (
             prev_hash is not None
             and prev_action is not None
@@ -451,7 +472,6 @@ class HeuristicRLAgent(HeuristicAgent):
                         action_index=prev_action,
                     )
 
-        # When a new level starts, run the MAML outer update and reset task weights
         if was_level_up:
             self.frame_processor.on_new_level()
 
