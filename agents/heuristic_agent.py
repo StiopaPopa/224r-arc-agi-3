@@ -60,7 +60,7 @@ class HeuristicAgent(Agent):
 
 
     N_GROUPS: int = 5
-    TOTAL_TIME_ALLOWED = 7.9 * 60 * 60 # 7.9 hours
+    TOTAL_TIME_ALLOWED = 5 * 60 # 5 minutes, can change
 
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
