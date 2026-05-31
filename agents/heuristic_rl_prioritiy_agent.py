@@ -54,12 +54,12 @@ class FrameProcessorRL(FrameProcessor):
         # --- Vanilla RL: linear policy over 4 features ---
         # Warm-start approximates heuristic ordering:
         # [saturation, closeness_to_medium, is_status_bar, log1p_twins]
-        self.rl_weights = np.array([0.4, 0.6, -1.0, -0.2])
+        self.rl_weights = np.array([0.2, 0.8, -1.0, -0.2])
         self.rl_lr: float = 0.05
 
         # --- MAML (first-order FOMAML): linear policy ---
-        self.maml_meta_weights = np.array([0.4, 0.6, -1.0, -0.2])
-        self.maml_task_weights = np.array([0.4, 0.6, -1.0, -0.2])
+        self.maml_meta_weights = np.array([0.2, 0.8, -1.0, -0.2])
+        self.maml_task_weights = np.array([0.2, 0.8, -1.0, -0.2])
         self.maml_meta_lr: float = 0.01
         self.maml_inner_lr: float = 0.05
         self.maml_task_experience: list[tuple[np.ndarray, float]] = []
