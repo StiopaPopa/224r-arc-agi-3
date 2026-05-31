@@ -15,10 +15,10 @@ from .templates.smolagents import SmolCodingAgent, SmolVisionAgent
 from .heuristic_agent import HeuristicAgent
 from .heuristic_rl_prioritiy_agent import (
     HeuristicRLAgent,
+    HeuristicRLVanillaAgent,
     HeuristicRLMAMLAgent,
     HeuristicRLNNAgent,
     HeuristicRLSACAgent,
-    HeuristicRLVanillaAgent,
 )
 
 load_dotenv()
@@ -61,9 +61,4 @@ __all__ = [
     "Recorder",
     "Playback",
     "AVAILABLE_AGENTS",
-    "HeuristicRLAgent",
-    "HeuristicRLVanillaAgent",
-    "HeuristicRLMAMLAgent",
-    "HeuristicRLNNAgent",
-    "HeuristicRLSACAgent",
 ]
