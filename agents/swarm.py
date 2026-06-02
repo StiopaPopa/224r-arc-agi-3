@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Optional, Type
 
 import requests
 
+from .evaluation_logging import EvaluationLogger
 from .structs import Scorecard
 
 if TYPE_CHECKING:
@@ -55,6 +56,7 @@ class Swarm:
         self._session = requests.Session()
         self._session.headers.update(self.headers)
         self.tags = tags.copy() if tags else []
+        self.evaluation_logger = EvaluationLogger(self.agent_name)
 
         # Set up base tags for tracing
         if self.agent_name.endswith(".recording.jsonl"):
@@ -84,6 +86,7 @@ class Swarm:
                 cookies=self._session.cookies,
                 tags=self.tags,
             )
+            a.evaluation_logger = self.evaluation_logger
             self.agents.append(a)
 
         # create all the threads
@@ -111,6 +114,7 @@ class Swarm:
             logger.info(f"View your scorecard online: {scorecard_url}")
 
         self.cleanup(scorecard)
+        self.evaluation_logger.finalize(scorecard)
 
         return scorecard
 

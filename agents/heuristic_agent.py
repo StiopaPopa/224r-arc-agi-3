@@ -468,7 +468,16 @@ class HeuristicAgent(Agent):
                 self.level_up = True
                 print(f"Error: {e}, re-initializing the GraphExplorer")
                 action = self.last_action_object
+            previous_frame = self.frames[-1]
             if frame := self.take_action(action): # NOTE: What does ":=" do?
+                if self.evaluation_logger is not None:
+                    self.evaluation_logger.record_action(
+                        agent=self,
+                        action=action,
+                        previous_frame=previous_frame,
+                        frame=frame,
+                        action_index=self.action_counter,
+                    )
                 new_score = frame.score
                 if new_score > score:
                     self.level_up = True

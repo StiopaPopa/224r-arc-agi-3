@@ -63,6 +63,7 @@ def cleanup(
             scorecard_url = f"{ROOT_URL}/scorecards/{card_id}"
             logger.info(f"View your scorecard online: {scorecard_url}")
 
+    swarm.evaluation_logger.finalize(scorecard if card_id else None)
     sys.exit(0)
 
 

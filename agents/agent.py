@@ -70,6 +70,7 @@ class Agent(ABC):
         self._session = requests.Session()
         self._session.cookies = deepcopy(cookies)
         self._session.headers.update(self.headers)
+        self.evaluation_logger: Optional[Any] = None
 
     @trace_agent_session
     def main(self) -> None:
@@ -80,7 +81,16 @@ class Agent(ABC):
             and self.action_counter <= self.MAX_ACTIONS
         ):
             action = self.choose_action(self.frames, self.frames[-1])
+            previous_frame = self.frames[-1]
             if frame := self.take_action(action):
+                if self.evaluation_logger is not None:
+                    self.evaluation_logger.record_action(
+                        agent=self,
+                        action=action,
+                        previous_frame=previous_frame,
+                        frame=frame,
+                        action_index=self.action_counter,
+                    )
                 self.append_frame(frame)
                 logger.info(
                     f"{self.game_id} - {action.name}: count {self.action_counter}, score {frame.score}, avg fps {self.fps})"
