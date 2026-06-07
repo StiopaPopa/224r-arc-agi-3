@@ -1,100 +1,78 @@
-# Explore It Till You Solve It
-[![Open In Colab](https://img.shields.io/badge/Open%20in-Colab-F9AB00?logo=googlecolab&logoColor=black)](https://colab.research.google.com/github/dolphin-in-a-coma/arc-agi-3-just-explore/blob/main/ARC_AGI_3_Solve_by_Exploration.ipynb)
-[![Article](https://img.shields.io/badge/Article-arXiv-B31B1B?logo=arxiv&logoColor=white)](https://arxiv.org/abs/2512.24156)
-[![Challenge](https://img.shields.io/badge/Challenge-ARC--AGI--3-5B5BFF)](https://three.arcprize.org/leaderboard)
+# Learning Priority Functions for Graph-Based Exploration in ARC-AGI-3
 
-An exploration-only solution for ARC-AGI-3. In the [official evaluation](https://three.arcprize.org/leaderboard) of the ARC-AGI-3 Preview Challenge, it solved **12 out of 25 private levels**, finishing 3rd.
+**CS224R Final Project** — Ryan Bookman, Steve Mendeleev, Kyle Feinstein (Stanford University, 2026)
 
-After correcting the graph-resetting bug post-evaluation ([commit aad8145](https://github.com/dolphin-in-a-coma/arc-agi-3-just-explore/commit/aad8145cd54731b11cda957bfe241b71c7a14605)), it solves a median of **17 private levels** (one level below the 1st-place solution), with results ranging from 14 to 19 levels across five test runs.
+This repo extends the [graph-based exploration approach by Rudakov et al.](https://arxiv.org/abs/2512.24156) for ARC-AGI-3 by replacing its hand-coded priority heuristic with learned priority functions trained online via reinforcement learning.
 
-A more detailed description is available in the [workshop article](https://arxiv.org/abs/2512.24156), presented at the AAAI 2026 Workshop on AI for Scientific Research.
+## Overview
 
-## Quickstart 
-This repository was originally forked from [the challenge repo](https://github.com/arcprize/ARC-AGI-3-Agents). The setup mostly mirrors the original one. Alternatively, you can run the code in [Google Colab](https://colab.research.google.com/github/dolphin-in-a-coma/arc-agi-3-just-explore/blob/main/ARC_AGI_3_Solve_by_Exploration.ipynb).
+ARC-AGI-3 is an interactive benchmark where agents must discover unknown game mechanics through exploration under a strict action budget. The Rudakov et al. baseline tracks visited states in a directed graph and uses a fixed heuristic to assign each visual segment to one of five click-priority groups. This heuristic cannot adapt across levels.
+
+We ask: can a *learned* priority function improve exploration efficiency across ARC-AGI-3's progressively harder levels?
+
+### Key contributions
+
+- Five online-learning agents that replace the fixed heuristic with a learned scoring function, all built on top of the existing graph explorer
+- A richer four-feature segment representation (vs. three binary features in the original) enabling gradient-based learning
+- Warm-started weights calibrated to recover the heuristic's prior ordering
+- Online training from a dense ±1 binary reward signal (did clicking a segment cause a visual state transition?)
+
+### Agents
+
+| Agent | Approach |
+|-------|----------|
+| REINFORCE | Vanilla policy gradient — simple and interpretable |
+| FOMAML | First-order MAML — meta-learns an initialization for fast per-level adaptation |
+| Neural Net (MLP) | Two-layer MLP trained by online backpropagation |
+| SAC | Soft Actor-Critic — off-policy with replay buffer, twin critics, entropy regularization |
+| PPO | Proximal Policy Optimization — clipped surrogate objective with GAE-λ advantages |
+
+### Results (45-min eval on ARC-AGI-3 `vc33`)
+
+| Agent | Score | vs. Baseline (0.59) |
+|-------|-------|---------------------|
+| FOMAML | **4.42** | 7.5× |
+| REINFORCE | 2.82 | 4.8× |
+| SAC | 2.41 | 4.1× |
+| PPO | 0.54 | ~baseline |
+| Neural Net | 0.04 | below baseline |
+
+FOMAML's dominance confirms that the primary bottleneck is fast per-level adaptation: different levels introduce distinct interactive elements, so an initialization trained for quick adaptation consistently outperforms a single accumulated weight vector.
+
+## Quickstart
 
 Install [uv](https://docs.astral.sh/uv/getting-started/installation/) if not already installed.
 
-1. Clone this repository and enter the directory.
+1. Clone this repo and enter the directory.
 
 ```bash
-git clone https://github.com/dolphin-in-a-coma/arc-agi-3-just-explore.git
-cd arc-agi-3-just-explore
+git clone https://github.com/StiopaPopa/224r-arc-agi-3.git
+cd 224r-arc-agi-3
 ```
 
-2. Copy `.env.example` to `.env`.
+2. Copy `.env.example` to `.env` and set your ARC-AGI-3 API key.
 
 ```bash
 cp .env.example .env
+# edit .env and set ARC_API_KEY="your_api_key_here"
 ```
 
-3. Get an API key from the [ARC-AGI-3 Website](https://three.arcprize.org/) and set it in your `.env` file.
+3. Run an agent. Available agent names: `heuristicagent`, `vanillaagent`, `mamlagent`, `nnagent`, `sacagent`, `ppoagent`.
 
 ```bash
-export ARC_API_KEY="your_api_key_here"
+uv run main.py --agent=mamlagent
 ```
 
-4. Run the agent. The command below runs the swarm across all games unless a specific game is provided with `--game`.
+To run across all games for a fixed duration (e.g. 45 minutes):
 
 ```bash
-uv run main.py --agent=heuristicagent
+uv run batch_run.py --agent=mamlagent --minutes=45
 ```
 
-For more information, see the [original documentation](https://three.arcprize.org/docs#quick-start) or the [tutorial video](https://youtu.be/xEVg9dcJMkw).
+## Paper
 
-## The method
-
-### Motivation
-The initial idea was to make LLMs interact with the environment more effectively by:
-- Providing a textual description of the environment.
-- Introducing meaningful click actions (e.g., click an object instead of raw coordinates).
-- Building a replay buffer for in-context reinforcement learning.
-
-After experiments on simple levels (passing a winning path from a previous level and providing a list of clickable objects), this direction ended up less promising. In parallel, a brute-force exploration method emerged and performed better for the public tasks.
-
-### Description
-The method has two parts:
-- Frame Processor
-- Level Graph Explorer
-
-#### Frame Processor
-Basic image processing aims to reduce irrelevant visual variability and focus exploration on actionable regions. It's done by:
-- Segmenting the frame into single-color connected components.
-- Detecting and masking likely status bars (e.g., remaining steps).
-- For click-controlled games, grouping segments into five priority tiers based on button likelihood (average size, salient color; lowest tier includes segments likely to be status bars).
-- Hashing the masked image for use by the graph explorer.
-
-#### Level Graph Explorer
-From each known frame (graph node), the explorer maintains paths to frontier frames—those with untested actions (graph edges). For each frame, it tracks:
-- The list of possible actions (clicks for `ft09`/`cv33`, arrows for `ls20`).
-- For each action: priority level, tested flag, transition result, destination frame, and distance to the nearest frontier.
-
-Actions are taken from the highest-priority group with remaining untested actions; only when all such actions are exhausted across the graph do we proceed to lower-priority groups. Some utility functions are duplicated, and distances are recomputed more often than necessary - this can be cleaned up.
-
-### Thoughts
-This is a limited but effective approach that approaches the limits of brute-force solving for these games. The goal is simply to be more intelligent than a purely random agent.
-
-It can be tricked if the status bar differs significantly from the public games (e.g., integrated into the scene rather than at the edge). In such cases, the method degrades toward more random exploration because the state space implicitly includes many status bar variants. Additionally, large state spaces (e.g., `ft09` levels 3–4) can make the method intractable. Non-determinism or partial observations can also cause issues.
-
-A natural extension would be to learn simple world models that predict the next frame from the current frame and action. This could improve sample efficiency by roughly the average number of actions per frame. However, it’s unclear whether such models would help prioritize exploration of “interesting” states in these games by favoring higher uncertainty or surprise for the agent. For example, why should the correct pattern in `ft09` be more surprising than an incorrect one?
-
-## Citation
-
-If you find the work helpful for your research, please cite:
-
-E. Rudakov, J. Shock, and B. U. Cowley, *[Graph-Based Exploration for ARC-AGI-3 Interactive Reasoning Tasks](https://arxiv.org/abs/2512.24156)*, arXiv:2512.24156 (2025). DOI: 10.48550/arXiv.2512.24156
-
-```bibtex
-@misc{rudakov2025graphbased,
-  author = {Rudakov, Evgenii and Shock, Jonathan and Cowley, Benjamin Ultan},
-  title  = {Graph-Based Exploration for ARC-AGI-3 Interactive Reasoning Tasks},
-  year   = {2025},
-  eprint = {2512.24156},
-  doi    = {10.48550/arXiv.2512.24156},
-  url    = {https://arxiv.org/abs/2512.24156}
-}
-```
-
+The full writeup is in [`CS224_Paper/cs224r_final_report_2026.pdf`](CS224_Paper/cs224r_final_report_2026.pdf).
 
 ## License
 
-This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.
+MIT License. See [LICENSE](LICENSE) for details.
