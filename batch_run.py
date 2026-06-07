@@ -149,7 +149,7 @@ def main() -> None:
     # ["vc33", "tn36", "su15", "s5i5", "r11l", "lp85", "ft09"]
     _games = ["vc33"]
     # time limit (s) per agent across all games(!)
-    time_limit = 60
+    time_limit = 60 * 45
     # construct unique 'hash' for this eval run (based on date/time)
     date_str = time.strftime("%m/%d-%H:%M")  
     run_id = f"eval-{time_limit}-{date_str}"
