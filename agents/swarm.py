@@ -66,7 +66,7 @@ class Swarm:
         else:
             self.tags.extend(["agent", self.agent_name])
 
-    def main(self) -> Scorecard:
+    def main(self, time_limit: int | None = None) -> Scorecard:
         """The main orchestration loop, continues until all agents are done."""
 
         # submit start of scorecard
@@ -88,7 +88,7 @@ class Swarm:
 
         # create all the threads
         for a in self.agents:
-            self.threads.append(Thread(target=a.main, daemon=True))
+            self.threads.append(Thread(target=a.main, daemon=True, kwargs={"time_limit": time_limit}))
 
         # start all the threads
         for t in self.threads:

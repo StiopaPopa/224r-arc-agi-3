@@ -102,7 +102,7 @@ class HeuristicAgent(Agent):
 
         self.last_transition_suspicious = False
         
-        print(f'Will run for {self.TOTAL_TIME_ALLOWED/60/60} hours')
+        # print(f'Will run for {self.TOTAL_TIME_ALLOWED/60/60} hours')
 
 
 
@@ -452,7 +452,7 @@ class HeuristicAgent(Agent):
         return "\n".join(lines)
 
     @trace_agent_session
-    def main(self) -> None:
+    def main(self, time_limit: int = TOTAL_TIME_ALLOWED) -> None:
         """The main agent loop. Play the game_id until finished, then exits."""
         self.timer = time.time()
         score = 0
@@ -482,8 +482,8 @@ class HeuristicAgent(Agent):
                 )
 
             self.action_counter += 1
-
-            if time.time() - self.time_start > self.TOTAL_TIME_ALLOWED:
+            
+            if time.time() - self.time_start > time_limit:
                 break
 
         self.cleanup()
