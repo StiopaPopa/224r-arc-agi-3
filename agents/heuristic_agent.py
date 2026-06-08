@@ -70,14 +70,14 @@ class HeuristicAgent(Agent):
 
         self.frame_processor = FrameProcessor()
 
-        self.status_bar_mask = None # np.ndarray | None
+        self.status_bar_mask = None
 
         self.hashed_frame2action_results = {}
         self.hashed_frame2transitions = {}
 
         self.last_hashed_frame = None
-        # self.last_segment_to_click = None
-        self.last_action = None # int | None
+        
+        self.last_action = None
 
         self.arrow_control = True
 
@@ -116,8 +116,6 @@ class HeuristicAgent(Agent):
         return any(
             [
                 latest_frame.state is GameState.WIN,
-                # uncomment below to only let the agent play one time
-                # latest_frame.state is GameState.GAME_OVER,
             ]
         )
 
@@ -513,8 +511,6 @@ class FrameProcessor:
         """
         Segment `frame` into {self.connectivity_rank}-connected components (same color).
 
-        NOTE: the twins identification increases complexity of the algorithm to O(n^2)
-
         Returns
         -------
         list[dict]
@@ -525,21 +521,18 @@ class FrameProcessor:
             - is_rectangle : bool               # fully fills its bounding box
             - number_of_twins : int             # number of other components considered twins
             - twin_ids     : list[int]          # ids (1-based) of those twins
-                NOTE: here we don't check shapes of the twins thoroughly
-
         """
 
         h, w = frame.shape
         label_map = np.zeros((h, w), dtype=int) - 1 # -1 = unvisited
         components: list[dict] = []
-        cid = -1                                          # component id counter
+        cid = -1 #component id counter
 
         offsets = self.OFFSETS4 if self.connectivity_rank == 4 else self.OFFSETS8
 
-        # --- first pass: flood-fill each blob ---------------------------------
         for y in range(h):
             for x in range(w):
-                if label_map[y, x] != -1:                      # already labelled
+                if label_map[y, x] != -1: # already labelled
                     continue
                 cid += 1
                 color = int(frame[y, x])
@@ -550,7 +543,7 @@ class FrameProcessor:
                 min_y = max_y = y
                 area = 0
 
-                while q:                                 # BFS
+                while q: # BFS
                     cy, cx = q.popleft()
                     area += 1
                     min_x, max_x = min(min_x, cx), max(max_x, cx)
@@ -579,8 +572,7 @@ class FrameProcessor:
                     )
                 )
 
-        # --- second pass: identify twins --------------------------------------
-        # here: simple rule → same area, same rectangle status, and same color
+        # second pass: identify twins
         for i, comp in enumerate(components):
             twins = [
                 j
@@ -820,9 +812,7 @@ class FrameProcessor:
         plt.tight_layout()
         plt.savefig(save_path)
 
-        # ---------------------------------------------------------------------
         # Console description
-        # ---------------------------------------------------------------------
         for idx, comp in enumerate(components, start=1):
             bb = comp["bounding_box"]
             print(
@@ -848,14 +838,13 @@ class FrameProcessor:
         # TODO: maybe just convert a matrix to a number and store it
         frame = np.asarray(frame, dtype=np.uint8, order='C')
 
-        # ---- pack two 4-bit values into each byte ---------------------------
+        # pack two 4-bit values into each byte
         flat = frame.ravel()
         if flat.size & 1:                       # pad to even length
             flat = np.concatenate([flat, np.zeros(1, dtype=np.uint8)])
         packed = (flat[0::2] << 4) | (flat[1::2] & 0x0F)
         payload = packed.tobytes()
 
-        # ---- hash with Blake2B (128-bit digest) -----------------------------
         shape_tag = frame.shape.__repr__().encode()
         return hashlib.blake2b(payload,
                             digest_size=16,   # 128 bits

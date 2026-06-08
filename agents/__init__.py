@@ -37,7 +37,6 @@ for rec in Recorder.list():
 # update the agent dictionary to include subclasses of LLM class
 AVAILABLE_AGENTS["reasoningagent"] = ReasoningAgent
 
-# RL/MAML/NN priority-mode agents (subclasses of HeuristicAgent, not direct Agent subclasses)
 AVAILABLE_AGENTS["base"] = HeuristicRLAgent
 AVAILABLE_AGENTS["vanilla"] = HeuristicRLVanillaAgent
 AVAILABLE_AGENTS["maml"] = HeuristicRLMAMLAgent

@@ -42,7 +42,6 @@ class FrameProcessorRL(FrameProcessor):
     """
 
     # Closeness-to-medium: Gaussian in log-area space centred at area=64
-    # (geometric mean of the 2–32 px medium range in each dimension: sqrt(2*32)^2 = 64)
     _LOG_IDEAL_AREA: float = float(np.log1p(64.0))
     _SIGMA: float = 2.5
 
@@ -51,20 +50,19 @@ class FrameProcessorRL(FrameProcessor):
         self.priority_mode = priority_mode
         self.last_features_list: list[list[float]] = []
 
-        # --- Vanilla RL: linear policy over 4 features ---
-        # Warm-start approximates heuristic ordering:
+        # Vanilla RL: linear policy over 4 features. Warm-start approximates heuristic ordering:
         # [saturation, closeness_to_medium, is_status_bar, log1p_twins]
         self.rl_weights = np.array([0.2, 0.8, -1.0, -0.2])
         self.rl_lr: float = 0.05
 
-        # --- MAML (first-order FOMAML): linear policy ---
+        # MAML (first-order FOMAML): linear policy
         self.maml_meta_weights = np.array([0.2, 0.8, -1.0, -0.2])
         self.maml_task_weights = np.array([0.2, 0.8, -1.0, -0.2])
         self.maml_meta_lr: float = 0.01
         self.maml_inner_lr: float = 0.05
         self.maml_task_experience: list[tuple[np.ndarray, float]] = []
 
-        # --- Neural net: 4 → 8 (ReLU) → 1 (sigmoid) ---
+        # Neural net: 4 → 8 (ReLU) → 1 (sigmoid)
         rng = np.random.default_rng(42)
         self.nn_W1 = rng.normal(0.0, 0.1, (8, 4))
         self.nn_b1 = np.zeros(8)
@@ -72,8 +70,7 @@ class FrameProcessorRL(FrameProcessor):
         self.nn_b2 = np.zeros(1)
         self.nn_lr: float = 0.05
 
-        # --- SAC: Soft Actor-Critic (off-policy, twin critics, entropy regularisation) ---
-        # actor 4→8 ReLU→1 sigmoid;  Q1/Q2/Q1t/Q2t: 4→8 ReLU→1 linear
+        # SAC: actor 4→8 ReLU→1 sigmoid;  Q1/Q2/Q1t/Q2t: 4→8 ReLU→1 linear
         rng_sac = np.random.default_rng(43)
         self.sac_actor_W1 = rng_sac.normal(0.0, 0.1, (8, 4))
         self.sac_actor_b1 = np.zeros(8)
@@ -106,7 +103,7 @@ class FrameProcessorRL(FrameProcessor):
         self.sac_update_freq: int = 1
         self.sac_steps: int = 0
 
-        # --- PPO: Proximal Policy Optimisation (on-policy, actor-critic, clipped surrogate) ---
+        # PPO: Proximal Policy Optimisation (on-policy, actor-critic, clipped surrogate)
         # Actor  4→8 ReLU→1 sigmoid  — outputs p(click | phi)
         # Critic 4→8 ReLU→1 linear   — outputs V(phi), used as GAE baseline
         rng_ppo = np.random.default_rng(44)
@@ -130,10 +127,7 @@ class FrameProcessorRL(FrameProcessor):
         # Each entry: (features, log_prob_old, reward, value_old)
         self.ppo_buffer: list[tuple[np.ndarray, float, float, float]] = []
 
-    # ------------------------------------------------------------------
     # Feature extraction
-    # ------------------------------------------------------------------
-
     @classmethod
     def _segment_features(cls, seg: dict) -> list[float]:
         """Return the 4-dimensional feature vector for one segment."""
@@ -147,10 +141,6 @@ class FrameProcessorRL(FrameProcessor):
         log_twins  = float(np.log1p(n_twins))
 
         return [saturation, closeness, is_status, log_twins]
-
-    # ------------------------------------------------------------------
-    # Utilities
-    # ------------------------------------------------------------------
 
     @staticmethod
     def _sigmoid(x: np.ndarray) -> np.ndarray:
@@ -168,10 +158,7 @@ class FrameProcessorRL(FrameProcessor):
             groups[g].add(int(seg_id))
         return groups
 
-    # ------------------------------------------------------------------
     # Override: collect features then dispatch
-    # ------------------------------------------------------------------
-
     def frame_segments_to_action_groups(
         self, frame_segments: list[dict], n_groups: int
     ) -> list[set[int]]:
@@ -186,10 +173,7 @@ class FrameProcessorRL(FrameProcessor):
         self.last_features_list = features_list
         return self.create_priority_groups(features_list)
 
-    # ------------------------------------------------------------------
     # Dispatch
-    # ------------------------------------------------------------------
-
     def create_priority_groups(self, features: list[list[float]]) -> list[set[int]]:
         if self.priority_mode == "vanilla_rl":
             return self.create_priority_groups_vanilla_rl(features)
@@ -203,10 +187,7 @@ class FrameProcessorRL(FrameProcessor):
             return self.create_priority_groups_ppo(features)
         raise ValueError(f"Unknown priority_mode: {self.priority_mode!r}")
 
-    # ------------------------------------------------------------------
     # Vanilla policy-gradient RL
-    # ------------------------------------------------------------------
-
     def create_priority_groups_vanilla_rl(
         self, features: list[list[float]]
     ) -> list[set[int]]:
@@ -228,10 +209,7 @@ class FrameProcessorRL(FrameProcessor):
         s = self._sigmoid(f @ self.rl_weights)
         self.rl_weights += self.rl_lr * reward * f * s * (1.0 - s)
 
-    # ------------------------------------------------------------------
-    # MAML (first-order / FOMAML)
-    # ------------------------------------------------------------------
-
+    # MAML
     def create_priority_groups_maml(
         self, features: list[list[float]]
     ) -> list[set[int]]:
@@ -270,10 +248,7 @@ class FrameProcessorRL(FrameProcessor):
         self.maml_task_weights = self.maml_meta_weights.copy()
         self.maml_task_experience = []
 
-    # ------------------------------------------------------------------
     # Neural network (2-layer MLP with online backprop)
-    # ------------------------------------------------------------------
-
     def create_priority_groups_nn(
         self, features: list[list[float]]
     ) -> list[set[int]]:
@@ -310,10 +285,7 @@ class FrameProcessorRL(FrameProcessor):
         self.nn_W2 -= self.nn_lr * d_W2
         self.nn_b2 -= self.nn_lr * d_b2
 
-    # ------------------------------------------------------------------
     # Soft Actor-Critic (SAC)
-    # ------------------------------------------------------------------
-
     def _sac_q_step(
         self,
         W1: np.ndarray, b1: np.ndarray,
@@ -384,7 +356,7 @@ class FrameProcessorRL(FrameProcessor):
             self._sac_q_step(self.sac_q1_W1, self.sac_q1_b1, self.sac_q1_W2, self.sac_q1_b2, f_b, r_b)
             self._sac_q_step(self.sac_q2_W1, self.sac_q2_b1, self.sac_q2_W2, self.sac_q2_b2, f_b, r_b)
 
-            # Actor update: minimise (p − σ(min_Q))² − α·H(p)
+            # Actor update
             q1 = self._sac_q_eval(self.sac_q1_W1, self.sac_q1_b1, self.sac_q1_W2, self.sac_q1_b2, f_b)
             q2 = self._sac_q_eval(self.sac_q2_W1, self.sac_q2_b1, self.sac_q2_W2, self.sac_q2_b2, f_b)
             a_tgt = float(self._sigmoid(np.array([min(q1, q2)]))[0])
@@ -413,10 +385,7 @@ class FrameProcessorRL(FrameProcessor):
         self.sac_q2t_W2 = tau * self.sac_q2_W2 + (1 - tau) * self.sac_q2t_W2
         self.sac_q2t_b2 = tau * self.sac_q2_b2 + (1 - tau) * self.sac_q2t_b2
 
-    # ------------------------------------------------------------------
     # Proximal Policy Optimisation (PPO)
-    # ------------------------------------------------------------------
-
     def _ppo_actor_forward(
         self, f: np.ndarray
     ) -> tuple[np.ndarray, np.ndarray, float]:
@@ -478,9 +447,8 @@ class FrameProcessorRL(FrameProcessor):
         values  = np.array(values,   dtype=float)
         n       = len(rewards)
 
-        # ── GAE-λ advantage computation ───────────────────────────────────────
-        # Each segment interaction is treated as terminal, so the bootstrap
-        # value after the final step is 0.
+        # GAE-λ advantage computation
+        # Each segment interaction is treated as terminal, so the bootstrap value after the final step is 0.
         advantages = np.zeros(n, dtype=float)
         gae = 0.0
         for t in reversed(range(n)):
@@ -492,7 +460,7 @@ class FrameProcessorRL(FrameProcessor):
         returns    = advantages + values
         advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
 
-        # ── K epochs of random mini-batch gradient descent ────────────────────
+        # K epochs of random mini-batch gradient descent
         idx = np.arange(n)
         for _ in range(self.ppo_epochs):
             np.random.shuffle(idx)
@@ -514,7 +482,7 @@ class FrameProcessorRL(FrameProcessor):
     ) -> None:
         """Single-sample PPO gradient step on actor and critic."""
 
-        # ── Actor ─────────────────────────────────────────────────────────────
+        # Actor
         h_ap, h_a, p = self._ppo_actor_forward(f)
         p_c   = float(np.clip(p, 1e-8, 1.0 - 1e-8))
         lp    = float(np.log(p_c))
@@ -523,9 +491,9 @@ class FrameProcessorRL(FrameProcessor):
 
         # Gradient of -min(ratio·A, clip·A) w.r.t. log p
         if abs(ratio * adv) <= abs(clip * adv):
-            d_lp = -adv          # unclipped branch: d/d(log p) of -(ratio · adv)
+            d_lp = -adv # unclipped branch: d/d(log p) of -(ratio · adv)
         else:
-            d_lp = 0.0           # clipped: no gradient flows
+            d_lp = 0.0 # clipped: no gradient flows
 
         # Entropy H(p) = -p log p - (1-p) log(1-p)  →  dH/dp = log((1-p)/p)
         d_entropy = float(np.log((1.0 - p_c) / p_c))
@@ -545,7 +513,7 @@ class FrameProcessorRL(FrameProcessor):
         self.ppo_actor_W2 -= self.ppo_lr * g_W2
         self.ppo_actor_b2 -= self.ppo_lr * g_b2
 
-        # ── Critic MSE: L_v = c_v · (V(f) - ret)² ───────────────────────────
+        # Critic MSE: L_v = c_v · (V(f) - ret)^2
         h_cp, h_c, v_pred = self._ppo_critic_forward(f)
         d_v = self.ppo_c_value * 2.0 * (v_pred - ret)
 
@@ -560,10 +528,7 @@ class FrameProcessorRL(FrameProcessor):
         self.ppo_critic_W2 -= self.ppo_lr * g_W2c
         self.ppo_critic_b2 -= self.ppo_lr * g_b2c
 
-    # ------------------------------------------------------------------
     # Unified update entry point (called from HeuristicRLAgent)
-    # ------------------------------------------------------------------
-
     def record_outcome(self, seg_features: list[float], reward: float) -> None:
         """Update weights given the observed transition outcome for one segment."""
         if self.priority_mode == "vanilla_rl":
@@ -579,10 +544,7 @@ class FrameProcessorRL(FrameProcessor):
         # heuristic: no parameters to update
 
 
-# ---------------------------------------------------------------------------
 # Agent classes
-# ---------------------------------------------------------------------------
-
 class HeuristicRLAgent(HeuristicAgent):
     """HeuristicAgent that replaces FrameProcessor with FrameProcessorRL.
 
@@ -627,40 +589,20 @@ class HeuristicRLAgent(HeuristicAgent):
 
 
 class HeuristicRLVanillaAgent(HeuristicRLAgent):
-    """HeuristicRLAgent using vanilla policy-gradient RL for segment priority."""
     PRIORITY_MODE = "vanilla_rl"
 
 
 class HeuristicRLMAMLAgent(HeuristicRLAgent):
-    """HeuristicRLAgent using first-order MAML for segment priority."""
     PRIORITY_MODE = "maml"
 
 
 class HeuristicRLNNAgent(HeuristicRLAgent):
-    """HeuristicRLAgent using a 2-layer MLP for segment priority."""
     PRIORITY_MODE = "nn"
 
 
 class HeuristicRLSACAgent(HeuristicRLAgent):
-    """HeuristicRLAgent using Soft Actor-Critic for segment priority.
-
-    Key differences from vanilla_rl / nn:
-      - Twin Q-critics (reduces Q-value overestimation)
-      - Off-policy replay buffer (better sample efficiency)
-      - Entropy regularisation with learned temperature α (exploration)
-      - Soft target network updates (training stability)
-    """
     PRIORITY_MODE = "sac"
 
 
 class HeuristicRLPPOAgent(HeuristicRLAgent):
-    """HeuristicRLAgent using Proximal Policy Optimisation for segment priority.
-
-    Key differences from the other RL agents:
-      - On-policy rollout buffer (size 32) with full GAE-λ advantage estimates
-      - Clipped surrogate objective (ε=0.2) prevents destructively large policy updates
-      - Dedicated critic network provides a lower-variance value baseline
-      - K=4 gradient epochs per rollout reuse collected data without going off-policy
-      - Entropy bonus (c_e=0.01) maintains exploration throughout training
-    """
     PRIORITY_MODE = "ppo"

@@ -147,7 +147,7 @@ def main() -> None:
     # ["base", "vanilla", "maml", "nn", "sac", "ppo"]
     agents = ["base", "vanilla", "maml", "nn", "sac", "ppo"]
     # ["vc33", "tn36", "su15", "s5i5", "r11l", "lp85", "ft09"]
-    _games = ["vc33"]
+    _games = ["r11l"]
     # time limit (s) per agent across all games(!)
     time_limit = 60 * 45
     # construct unique 'hash' for this eval run (based on date/time)
